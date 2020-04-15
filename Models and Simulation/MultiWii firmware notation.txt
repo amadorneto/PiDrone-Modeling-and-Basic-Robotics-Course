@@ -1,0 +1,159 @@
+#define PIDMIX(X,Y,Z) rcCommand[THROTTLE] + axisPID[ROLL]*X + axisPID[PITCH]*Y + YAW_DIRECTION * axisPID[YAW]*Z
+
+#elif defined( QUADX )
+    motor[0] = PIDMIX(-1,+1,-1); //REAR_R
+    motor[1] = PIDMIX(-1,-1,+1); //FRONT_R
+    motor[2] = PIDMIX(+1,+1,+1); //REAR_L
+    motor[3] = PIDMIX(+1,-1,-1); //FRONT_L
+
+# Quad Plus. For the PiDrone code doesn't matter the type, but for the slides of drone dynammic, it consider the Plus configuration, so I'll use it for simulation
+#elif defined( QUADP )
+    motor[0] = PIDMIX( 0,+1,-1); //REAR
+    motor[1] = PIDMIX(-1, 0,+1); //RIGHT
+    motor[2] = PIDMIX(+1, 0,+1); //LEFT
+    motor[3] = PIDMIX( 0,-1,-1); //FRONT
+
+motor[0] = T + axisPID[P] - YAW_DIRECTION*axisPID[YAW]
+motor[1] = T - axisPID[R] + YAW_DIRECTION*axisPID[YAW]
+motor[2] = T + axisPID[R] + YAW_DIRECTION*axisPID[YAW]
+motor[3] = T - axisPID[P] - YAW_DIRECTION*axisPID[YAW]
+
+
+//**** PITCH & ROLL & YAW PID ****
+#if PID_CONTROLLER == 1 // evolved oldschool
+  if ( f.HORIZON_MODE ) prop = min(max(abs(rcCommand[PITCH]),abs(rcCommand[ROLL])),512);
+
+  // PITCH & ROLL
+  for(axis=0;axis<2;axis++) {
+    rc = rcCommand[axis]<<1;
+    error = rc - imu.gyroData[axis];
+    errorGyroI[axis]  = constrain(errorGyroI[axis]+error,-16000,+16000);       // WindUp   16 bits is ok here
+    if (abs(imu.gyroData[axis])>640) errorGyroI[axis] = 0;
+
+    ITerm = (errorGyroI[axis]>>7)*conf.pid[axis].I8>>6;                        // 16 bits is ok here 16000/125 = 128 ; 128*250 = 32000
+
+    // conf.pid[PITCH].P8 and conf.pid[ROLL] are 28 or 33, so I'll use 30 to approximations
+    PTerm = (int32_t)rc*conf.pid[axis].P8>>6;
+
+    if (f.ANGLE_MODE || f.HORIZON_MODE) { // axis relying on ACC
+      // 50 degrees max inclination
+      errorAngle         = constrain(rc + GPS_angle[axis],-500,+500) - att.angle[axis] + conf.angleTrim[axis]; //16 bits is ok here
+      errorAngleI[axis]  = constrain(errorAngleI[axis]+errorAngle,-10000,+10000);                                                // WindUp     //16 bits is ok here
+
+      PTermACC           = ((int32_t)errorAngle*conf.pid[PIDLEVEL].P8)>>7; // 32 bits is needed for calculation: errorAngle*P8 could exceed 32768   16 bits is ok for result
+      
+      int16_t limit      = conf.pid[PIDLEVEL].D8*5;
+      PTermACC           = constrain(PTermACC,-limit,+limit);
+
+      ITermACC           = ((int32_t)errorAngleI[axis]*conf.pid[PIDLEVEL].I8)>>12;   // 32 bits is needed for calculation:10000*I8 could exceed 32768   16 bits is ok for result
+
+      ITerm              = ITermACC + ((ITerm-ITermACC)*prop>>9);
+      PTerm              = PTermACC + ((PTerm-PTermACC)*prop>>9);
+    }
+
+    PTerm -= ((int32_t)imu.gyroData[axis]*dynP8[axis])>>6; // 32 bits is needed for calculation   
+    
+    delta          = imu.gyroData[axis] - lastGyro[axis];  // 16 bits is ok here, the dif between 2 consecutive gyro reads is limited to 800
+    lastGyro[axis] = imu.gyroData[axis];
+    DTerm          = delta1[axis]+delta2[axis]+delta;
+    delta2[axis]   = delta1[axis];
+    delta1[axis]   = delta;
+ 
+    DTerm = ((int32_t)DTerm*dynD8[axis])>>5;        // 32 bits is needed for calculation
+
+    axisPID[axis] =  PTerm + ITerm - DTerm;
+  }
+
+  //YAW
+  #define GYRO_P_MAX 300
+  #define GYRO_I_MAX 250
+
+  rc = (int32_t)rcCommand[YAW] * (2*conf.yawRate + 30)  >> 5;
+
+  error = rc - imu.gyroData[YAW];
+  errorGyroI_YAW  += (int32_t)error*conf.pid[YAW].I8;
+  errorGyroI_YAW  = constrain(errorGyroI_YAW, 2-((int32_t)1<<28), -2+((int32_t)1<<28));
+  if (abs(rc) > 50) errorGyroI_YAW = 0;
+  
+  PTerm = (int32_t)error*conf.pid[YAW].P8>>6;
+  #ifndef COPTER_WITH_SERVO
+    int16_t limit = GYRO_P_MAX-conf.pid[YAW].D8;
+    PTerm = constrain(PTerm,-limit,+limit);
+  #endif
+  
+  ITerm = constrain((int16_t)(errorGyroI_YAW>>13),-GYRO_I_MAX,+GYRO_I_MAX);
+  
+  axisPID[YAW] =  PTerm + ITerm;
+  
+
+
+
+// MIDRC == 1500
+
+lookupPitchRollRC[i] = (1526+65*(i*i-15))*i*90/1192;
+lookupPitchRollRC[0] = 0
+lookupPitchRollRC[1] = 46
+lookupPitchRollRC[2] = 102
+lookupPitchRollRC[3] = 168
+lookupPitchRollRC[4] = 244
+lookupPitchRollRC[5] = 330
+
+We can aproximate rcCommand[axis] to rcData[axis]/2
+
+lookupThrottleRC[i] = 1200 + 80*i
+lookupThrottleRC[0] = 1200
+lookupThrottleRC[1] = 1280
+lookupThrottleRC[2] = 1360
+lookupThrottleRC[3] = 1440
+lookupThrottleRC[4] = 1520
+lookupThrottleRC[5] = 1600
+lookupThrottleRC[6] = 1680
+lookupThrottleRC[7] = 1760
+lookupThrottleRC[8] = 1840
+lookupThrottleRC[9] = 1920
+
+// PITCH & ROLL only dynamic PID adjustemnt,  depending on throttle value
+  prop2 = 128; // prop2 was 100, is 128 now
+  if (rcData[THROTTLE]>1500) { // breakpoint is fix: 1500
+    if (rcData[THROTTLE]<2000) {
+      prop2 -=  ((uint16_t)conf.dynThrPID*(rcData[THROTTLE]-1500)>>9); //  /512 instead of /500
+    } else {
+      prop2 -=  conf.dynThrPID;
+    }
+  }
+
+  for(axis=0;axis<3;axis++) {
+    tmp = min(abs(rcData[axis]-MIDRC),500);
+    #if defined(DEADBAND)
+      if (tmp>DEADBAND) { tmp -= DEADBAND; }
+      else { tmp=0; }
+    #endif
+    if(axis!=2) { //ROLL & PITCH
+      tmp2 = tmp>>7; // 500/128 = 3.9  => range [0;3]
+      rcCommand[axis] = lookupPitchRollRC[tmp2] + ((tmp-(tmp2<<7)) * (lookupPitchRollRC[tmp2+1]-lookupPitchRollRC[tmp2])>>7);
+      prop1 = 128-((uint16_t)conf.rollPitchRate*tmp>>9); // prop1 was 100, is 128 now -- and /512 instead of /500
+      prop1 = (uint16_t)prop1*prop2>>7; // prop1: max is 128   prop2: max is 128   result prop1: max is 128
+      dynP8[axis] = (uint16_t)conf.pid[axis].P8*prop1>>7; // was /100, is /128 now
+      dynD8[axis] = (uint16_t)conf.pid[axis].D8*prop1>>7; // was /100, is /128 now
+    } else {      // YAW
+      rcCommand[axis] = tmp;
+    }
+    if (rcData[axis]<MIDRC) rcCommand[axis] = -rcCommand[axis];
+  }
+  tmp = constrain(rcData[THROTTLE],MINCHECK,2000);
+  tmp = (uint32_t)(tmp-MINCHECK)*2559/(2000-MINCHECK); // [MINCHECK;2000] -> [0;2559]
+  tmp2 = tmp/256; // range [0;9]
+  rcCommand[THROTTLE] = lookupThrottleRC[tmp2] + (tmp-tmp2*256) * (lookupThrottleRC[tmp2+1]-lookupThrottleRC[tmp2]) / 256; // [0;2559] -> expo -> [conf.minthrottle;MAXTHROTTLE]
+
+
+#if PID_CONTROLLER == 1
+      conf.pid[ROLL].P8     = 33;  conf.pid[ROLL].I8    = 30; conf.pid[ROLL].D8     = 23;
+      conf.pid[PITCH].P8    = 33; conf.pid[PITCH].I8    = 30; conf.pid[PITCH].D8    = 23;
+      conf.pid[PIDLEVEL].P8 = 90; conf.pid[PIDLEVEL].I8 = 10; conf.pid[PIDLEVEL].D8 = 100;
+    #elif PID_CONTROLLER == 2
+      conf.pid[ROLL].P8     = 28;  conf.pid[ROLL].I8    = 10; conf.pid[ROLL].D8     = 7;
+      conf.pid[PITCH].P8    = 28; conf.pid[PITCH].I8    = 10; conf.pid[PITCH].D8    = 7;
+      conf.pid[PIDLEVEL].P8 = 30; conf.pid[PIDLEVEL].I8 = 32; conf.pid[PIDLEVEL].D8 = 0;
+    #endif
+    conf.pid[YAW].P8      = 68;  conf.pid[YAW].I8     = 45;  conf.pid[YAW].D8     = 0;
+    conf.pid[PIDALT].P8   = 64; conf.pid[PIDALT].I8   = 25; conf.pid[PIDALT].D8   = 24;
